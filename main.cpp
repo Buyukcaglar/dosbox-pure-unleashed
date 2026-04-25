@@ -25,6 +25,7 @@
 #include <ZL_Input.h>
 #include <ZL_Thread.h>
 #include <ZL_Math3D.h>
+#include <ZL_Network.h>
 
 #include <vector>
 
@@ -362,6 +363,14 @@ static ticks_t txtOSDTick, dirtySettingsTick;
 struct SNotify { ZL_TextBuffer txt; unsigned duration; retro_log_level level; ticks_t ticks; float y; };
 static std::vector<SNotify> vecNotify;
 static std::vector<ZL_JoystickData*> vecJoys;
+
+// Network
+static ZL_Server server;
+static ZL_PeerHandle peers[32];
+static ZL_Client client;
+static retro_netpacket_callback* npcb;
+static Bit16u net_port, my_client_id;
+static std::vector<Bit8u> pktmem;
 
 extern "C" { unsigned int SDL_GetTicks(void); }
 extern "C" { int SDL_ShowCursor(int toggle); }
@@ -787,6 +796,158 @@ static void RunLoad()
 	free(buf);
 }
 
+static void RETRO_CALLCONV netpacket_send(int flags, const void* buf, size_t len, uint16_t dst_client_id)
+{
+	ZL_ASSERT(len && (!my_client_id || my_client_id != dst_client_id));
+	if (pktmem.size() < len+2) pktmem.resize(len+2);
+	Bit8u* ppktmem = &pktmem[0];
+	memcpy(ppktmem+2, buf, len);
+
+	if (dst_client_id && server.IsOpened())
+	{
+		*(uint16_t*)ppktmem = 0; // server2client needs src_client_id (host is 0)
+		if (dst_client_id == RETRO_NETPACKET_BROADCAST)
+		{
+			for (ZL_PeerHandle h : peers) if (h) server.Send(h, ppktmem, len+2);
+		}
+		else if (dst_client_id <= COUNT_OF(peers) && peers[dst_client_id-1])
+			server.Send(peers[dst_client_id-1], ppktmem, len+2);
+	}
+	else if (my_client_id)
+	{
+		*(uint16_t*)ppktmem = dst_client_id; // client2server needs dst_client_id
+		client.Send(ppktmem, len+2);
+	}
+}
+
+static void RETRO_CALLCONV netpacket_poll_receive()
+{
+	// nothing for now
+}
+
+static void Net_OnServerConnect(const ZL_Peer &peer)
+{
+	ZL_ASSERT(peer.handle); // can't be NULL
+	for (uint16_t client_id = 1; client_id <= COUNT_OF(peers); client_id++)
+	{
+		if (peers[client_id-1]) continue;
+		server.SetPeerData(peer, (void*)(size_t)client_id);
+		server.Send(peer.handle, &client_id, 2);
+		peers[client_id-1] = peer.handle;
+		ZL_LOG("NET", "Server: Connect From: %x (client_id = %d)", peer.host, client_id);
+		vecNotify.push_back({ ZL_TextBuffer(fntOSD, ZL_String::format("Host: Player joined (IP: %d.%d.%d.%d)", ((peer.host>>24)&0xFF), ((peer.host>>16)&0xFF), ((peer.host>>8)&0xFF), (peer.host&0xFF))), 3000, RETRO_LOG_INFO, ZLTICKS, 0.0f });
+		return;
+	}
+	server.DisconnectPeer(peer.handle, 1); // server full
+}
+
+static void Net_OnServerDisconnect(const ZL_Peer &peer, unsigned int msg)
+{
+	const uint16_t client_id = (uint16_t)(size_t)peer.data;
+	ZL_LOG("NET", "Server: Disconnected Client: %x (client_id = %d) (CloseMsg %d)", peer.host, client_id, msg);
+	vecNotify.push_back({ ZL_TextBuffer(fntOSD, ZL_String::format("Host: Player left (IP: %d.%d.%d.%d)", ((peer.host>>24)&0xFF), ((peer.host>>16)&0xFF), ((peer.host>>8)&0xFF), (peer.host&0xFF))), 3000, RETRO_LOG_INFO, ZLTICKS, 0.0f });
+	if (client_id && client_id <= COUNT_OF(peers) && peers[client_id-1])
+		peers[client_id-1] = NULL;
+}
+
+static void Net_OnServerReceive(const ZL_Peer &peer, ZL_Packet &d)
+{
+	ZL_ASSERT(d.length > 2 && peer.data && (uint16_t)(size_t)peer.data != *(uint16_t*)d.data);
+	if (d.length <= 2 || !peer.data) return;
+	const uint16_t src_client_id = (uint16_t)(size_t)peer.data;
+	const uint16_t dst_client_id = *(uint16_t*)d.data; // client2server has dst_client_id
+
+	//ZL_LOG("NET", "Server: Got: [%.*s] From: %x (from_client_id = %d - to_client_id = %d)", d.length, d.data, peer.host, src_client_id, dst_client_id);
+	if (dst_client_id == 0)
+	{
+		if (npcb) npcb->receive(((Bit8u*)d.data) + 2, d.length - 2, src_client_id); // only for me (host)
+	}
+	else if (dst_client_id == RETRO_NETPACKET_BROADCAST)
+	{
+		if (npcb) npcb->receive(((Bit8u*)d.data) + 2, d.length - 2, src_client_id); // broadcast includes me (host)
+		*(uint16_t*)d.data = src_client_id; // server2client needs src_client_id
+		for (ZL_PeerHandle h : peers) if (h && h != peer.handle) server.Send(h, d.data, d.length); // forward to everyone else
+		*(uint16_t*)d.data = dst_client_id; // revert in case the caller doesn't want this memory tampered with
+	}
+	else if (dst_client_id && dst_client_id <= COUNT_OF(peers) && peers[dst_client_id-1])
+	{
+		*(uint16_t*)d.data = src_client_id; // server2client needs src_client_id
+		server.Send(peers[dst_client_id-1], d.data, d.length); // send to specific client
+		*(uint16_t*)d.data = dst_client_id; // revert in case the caller doesn't want this memory tampered with
+	}
+}
+
+static void Net_OnClientConnect()
+{
+	ZL_LOG("NET", "Client: Connected");
+	vecNotify.push_back({ ZL_TextBuffer(fntOSD, "Connected to network host"), 3000, RETRO_LOG_INFO, ZLTICKS, 0.0f });
+	my_client_id = 0;
+}
+
+static void Net_OnClientDisconnect(unsigned int closemsg)
+{
+	ZL_LOG("NET", "Client: Disconnected (CloseMsg %d)", closemsg);
+	vecNotify.push_back({ ZL_TextBuffer(fntOSD, "Disconnected from network host"), 3000, RETRO_LOG_WARN, ZLTICKS, 0.0f });
+	if (npcb) npcb->stop();
+	my_client_id = 0;
+}
+
+static void Net_OnClientReceive(ZL_Packet &d)
+{
+	//ZL_LOG("NET", "Client: Got: [%.*s]", d.length, d.data);
+	ZL_ASSERT((!my_client_id && d.length == 2 && *(uint16_t*)d.data) || (my_client_id && d.length > 2));
+	if (my_client_id && d.length > 2)
+	{
+		uint16_t src_client_id = *(uint16_t*)d.data; // server2client has src_client_id
+		if (npcb) npcb->receive(((Bit8u*)d.data) + 2, d.length - 2, src_client_id);
+	}
+	else if (d.length == 2)
+	{
+		my_client_id = *(uint16_t*)d.data;
+		if (npcb) npcb->start(my_client_id, netpacket_send, netpacket_poll_receive);
+	}
+}
+
+bool DBPS_NetworkConnect(bool host, const char* ip = NULL)
+{
+	ZL_Network::Init();
+	if (server.IsOpened() || my_client_id)
+	{
+		if (npcb) npcb->stop();
+		my_client_id = 0;
+	}
+	const int port = (net_port ? net_port : 5234);
+	if (host)
+	{
+		client = ZL_Client();
+		server = ZL_Server(port, (unsigned short)COUNT_OF(peers), ip);
+		if (!server.IsOpened())
+		{
+			server = ZL_Server();
+			ZL_LOG("NET", "Server: Unable to start server on port %d listening on %s", port, (ip ? ip : "all interfaces"));
+			vecNotify.push_back({ ZL_TextBuffer(fntOSD, ZL_String::format("Host: Unable to start server (port %d, interface %s)", port, (ip ? ip : "all"))), 3000, RETRO_LOG_ERROR, ZLTICKS, 0.0f });
+			return false;
+		}
+		server.sigConnected().connect(Net_OnServerConnect);
+		server.sigDisconnected().connect( Net_OnServerDisconnect);
+		server.sigReceived().connect(Net_OnServerReceive);
+		ZL_LOG("NET", "Server: Started server on port %d listening on %s", port, (ip ? ip : "all interfaces"));
+		vecNotify.push_back({ ZL_TextBuffer(fntOSD, "Started network host, waiting for connections"), 3000, RETRO_LOG_INFO, ZLTICKS, 0.0f });
+		if (npcb) npcb->start(0, netpacket_send, netpacket_poll_receive);
+	}
+	else
+	{
+		ZL_LOG("NET", "Client: Connecting to server %s on port %d ...", (ip ? ip : "localhost"), port);
+		vecNotify.push_back({ ZL_TextBuffer(fntOSD, ZL_String::format("Connecting to network host (%s:%d)", (ip ? ip : "localhost"), port)), 3000, RETRO_LOG_INFO, ZLTICKS, 0.0f });
+		server = ZL_Server();
+		client = ZL_Client((ip ? ip : "localhost"), port);
+		client.sigConnected().connect(Net_OnClientConnect);
+		client.sigDisconnected().connect(Net_OnClientDisconnect);
+		client.sigReceived().connect(Net_OnClientReceive);
+	}
+	return true;
+}
+
 static retro_proc_address_t RETRO_CALLCONV retro_hw_get_proc_address(const char *sym)
 {
 	return (retro_proc_address_t)SDL_GL_GetProcAddress(sym);
@@ -955,6 +1116,11 @@ static bool RETRO_CALLCONV retro_environment_cb(unsigned cmd, void *data)
 			((retro_hw_render_callback*)data)->context_reset();
 			return true;
 		case RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE:
+			npcb = (retro_netpacket_callback*)data;
+			if (server.IsOpened())
+				npcb->start(0, netpacket_send, netpacket_poll_receive);
+			if (my_client_id)
+				npcb->start(my_client_id, netpacket_send, netpacket_poll_receive);
 			return true;
 		case RETRO_ENVIRONMENT_SET_MESSAGE_EXT:
 		{
@@ -1769,25 +1935,17 @@ static void OnDraw()
 
 static void OnLoad(int argc, char *argv[])
 {
-	// Load early so the core can send RETRO_ENVIRONMENT_SET_MESSAGE_EXT
-	enum { typomodernottfzlib_size = 8699, typomodernottf_size = 19568 };
-	extern const unsigned char* typomodernottfzlib;
-	std::vector<unsigned char> typomodernottf;
-	ZL_Compression::Decompress(typomodernottfzlib, (size_t)typomodernottfzlib_size, typomodernottf, (size_t)typomodernottf_size);
-	fntOSD = ZL_Font(ZL_File(&typomodernottf[0], typomodernottfzlib_size), 25);
-	txtOSD = ZL_TextBuffer(fntOSD).SetDrawOrigin(ZL_Origin::TopRight);
-
 	retro_system_info sys;
 	retro_get_system_info(&sys); // #1
 	retro_set_environment(retro_environment_cb); //#2
 	retro_init(); //#3
 
 	retro_game_info game = {0};
-	if (argc > 1) game.path = argv[1];
-	else if (ZL_Application::SettingsHas("default_content")) game.path = GetSetting("default_content");
+	int argi = 1;
+	for (; argi < argc; argi++) { if (argv[argi][0] != '-') { game.path = argv[argi++]; break; } }
+	if (!game.path && ZL_Application::SettingsHas("default_content")) game.path = GetSetting("default_content");
 	retro_load_game(&game); //#4
-	for (int i = 2; i < argc; i++)
-		DBPS_AddDisc(argv[i]);
+	for (; argi < argc; argi++) { if (argv[argi][0] != '-') { DBPS_AddDisc(argv[argi]); } }
 
 	retro_set_input_poll(retro_input_poll_cb);
 	retro_set_input_state(retro_input_state_cb);
@@ -1888,6 +2046,14 @@ static struct sDOSBoxPure : public ZL_Application
 		ZL_Display::SetAA(true);
 		ZL_Input::Init();
 
+		// Load early so the core can send RETRO_ENVIRONMENT_SET_MESSAGE_EXT
+		enum { typomodernottfzlib_size = 8699, typomodernottf_size = 19568 };
+		extern const unsigned char* typomodernottfzlib;
+		std::vector<unsigned char> typomodernottf;
+		ZL_Compression::Decompress(typomodernottfzlib, (size_t)typomodernottfzlib_size, typomodernottf, (size_t)typomodernottf_size);
+		fntOSD = ZL_Font(ZL_File(&typomodernottf[0], typomodernottfzlib_size), 25);
+		txtOSD = ZL_TextBuffer(fntOSD).SetDrawOrigin(ZL_Origin::TopRight);
+
 		ZL_Display::sigKeyDown.connect(OnKeyDown);
 		ZL_Display::sigKeyUp.connect(OnKeyUp);
 		ZL_Display::sigDropFile.connect(OnDropFile);
@@ -1902,6 +2068,21 @@ static struct sDOSBoxPure : public ZL_Application
 		DefaultPointerLock = PointerLock = ((GetSetting("interface_lockmouse", "false")[0]|0x20) == 't');
 		AudioLatency = ZL_Math::Max(atoi(GetSetting("interface_audiolatency", "25")), 5);
 
+		const char *arg_host = NULL, *arg_connect = NULL;
+		for (int argi = 1; argi < argc; argi++)
+		{
+			if (argv[argi][0] != '-') continue;
+			const char* val = strchr(argv[argi],'=');
+			switch (argv[argi][1]|0x20)
+			{
+				case 'h': arg_host    = ((val && val[1]) ? (val + 1) : ""); break;
+				case 'c': arg_connect = ((val && val[1]) ? (val + 1) : NULL); break;
+				case 'p': if (val && val[1]) { net_port = (Bit16u)atoi(val + 1); } break;
+			}
+		}
+		if (arg_host || arg_connect)
+			DBPS_NetworkConnect(!arg_connect, (arg_connect ? arg_connect : (*arg_host ? arg_host : NULL)));
+
 		OnLoad(argc, argv);
 
 		ZL_Audio::Init(AudioLatency * 44100 / 1000);
@@ -1911,6 +2092,7 @@ static struct sDOSBoxPure : public ZL_Application
 	virtual void AfterFrame()
 	{
 		OnDraw();
+		if (npcb && (server.IsOpened() || my_client_id)) npcb->poll();
 	}
 
 	virtual void OnQuit()
