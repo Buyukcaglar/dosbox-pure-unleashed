@@ -377,6 +377,7 @@ extern "C" { int SDL_ShowCursor(int toggle); }
 extern "C" { struct SDL_Window* SDL_GetMouseFocus(void); }
 extern "C" { void* SDL_GL_GetProcAddress(const char *proc); } 
 extern "C" { unsigned long SDL_GetThreadID(struct SDL_Thread* = NULL); }
+extern "C" { extern int SDL_GetLockModStates(void); }
 #if defined(ZILLALOG)
 static unsigned long MainThreadID = SDL_GetThreadID();
 #endif
@@ -1939,6 +1940,13 @@ static void OnLoad(int argc, char *argv[])
 	retro_get_system_info(&sys); // #1
 	retro_set_environment(retro_environment_cb); //#2
 	retro_init(); //#3
+
+	const int init_mod = SDL_GetLockModStates();
+	const uint16_t key_modifiers =
+		((init_mod & (ZLKMOD_NUM)) ? RETROKMOD_NUMLOCK : 0) |
+		((init_mod & (ZLKMOD_CAPS)) ? RETROKMOD_CAPSLOCK : 0) |
+		((init_mod & (ZLKMOD_RESERVED)) ? RETROKMOD_SCROLLOCK : 0);
+	DBPS_InitLEDs(key_modifiers);
 
 	retro_game_info game = {0};
 	int argi = 1;
