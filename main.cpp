@@ -1072,7 +1072,7 @@ static bool RETRO_CALLCONV retro_environment_cb(unsigned cmd, void *data)
 		case RETRO_ENVIRONMENT_GET_THROTTLE_STATE:
 		{
 			float corefps = (float)av.timing.fps, vsyncfps = ZL_Application::GetVsyncFps();
-			if (vsyncfps && vsyncfps != corefps)
+			if (vsyncfps && vsyncfps != corefps && ThrottleMode == RETRO_THROTTLE_NONE)
 			{
 				((retro_throttle_state*)data)->mode = RETRO_THROTTLE_VSYNC;
 				((retro_throttle_state*)data)->rate = vsyncfps;
