@@ -2,6 +2,8 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="vfs_implementation.cpp" />
+    <ClCompile Include="$(DBPDir)dosbox_pure_libretro.cpp" />
     <ClCompile Include="$(DBPDir)src/hardware/adlib.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
@@ -53,6 +55,9 @@
     <ClCompile Include="$(DBPDir)src/hardware/dbopl.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
+    <ClCompile Include="$(DBPDir)src/dbp_network.cpp">
+      <Filter>DOSBox</Filter>
+    </ClCompile>
     <ClCompile Include="$(DBPDir)src/dbp_serialize.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
@@ -101,9 +106,6 @@
     <ClCompile Include="$(DBPDir)src/dosbox.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
-    <ClCompile Include="$(DBPDir)dosbox_pure_libretro.cpp">
-      <Filter>DOSBox</Filter>
-    </ClCompile>
     <ClCompile Include="$(DBPDir)src/dos/drive_cache.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
@@ -119,7 +121,13 @@
     <ClCompile Include="$(DBPDir)src/dos/drive_memory.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
+    <ClCompile Include="$(DBPDir)src/dos/drive_mirror.cpp">
+      <Filter>DOSBox</Filter>
+    </ClCompile>
     <ClCompile Include="$(DBPDir)src/dos/drive_overlay.cpp">
+      <Filter>DOSBox</Filter>
+    </ClCompile>
+    <ClCompile Include="$(DBPDir)src/dos/drive_patch.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
     <ClCompile Include="$(DBPDir)src/dos/drive_union.cpp">
@@ -150,6 +158,9 @@
       <Filter>DOSBox</Filter>
     </ClCompile>
     <ClCompile Include="$(DBPDir)src/hardware/hardware.cpp">
+      <Filter>DOSBox</Filter>
+    </ClCompile>
+    <ClCompile Include="$(DBPDir)src/hardware/ide.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
     <ClCompile Include="$(DBPDir)src/ints/int10.cpp">
@@ -320,27 +331,19 @@
     <ClCompile Include="$(DBPDir)src/hardware/vga_xga.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
+    <ClCompile Include="$(DBPDir)src/hardware/voodoo.cpp">
+      <Filter>DOSBox</Filter>
+    </ClCompile>
     <ClCompile Include="$(DBPDir)src/ints/xms.cpp">
-      <Filter>DOSBox</Filter>
-    </ClCompile>
-    <ClCompile Include="vfs_implementation.cpp" />
-    <ClCompile Include="$(DBPDir)src\hardware\ide.cpp">
-      <Filter>DOSBox</Filter>
-    </ClCompile>
-    <ClCompile Include="$(DBPDir)src\hardware\voodoo.cpp">
-      <Filter>DOSBox</Filter>
-    </ClCompile>
-    <ClCompile Include="$(DBPDir)src\dos\drive_patch.cpp">
-      <Filter>DOSBox</Filter>
-    </ClCompile>
-    <ClCompile Include="$(DBPDir)src\dos\drive_mirror.cpp">
-      <Filter>DOSBox</Filter>
-    </ClCompile>
-    <ClCompile Include="$(DBPDir)src\dbp_network.cpp">
       <Filter>DOSBox</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="$(DBPDir)dosbox_pure_osd.h" />
+    <ClInclude Include="$(DBPDir)dosbox_pure_pad.h" />
+    <ClInclude Include="$(DBPDir)dosbox_pure_run.h" />
+    <ClInclude Include="$(DBPDir)dosbox_pure_sta.h" />
+    <ClInclude Include="$(DBPDir)dosbox_pure_ver.h" />
     <ClInclude Include="$(DBPDir)src/hardware/adlib.h">
       <Filter>DOSBox</Filter>
     </ClInclude>
@@ -509,6 +512,9 @@
     <ClInclude Include="$(DBPDir)include/mixer.h">
       <Filter>DOSBox</Filter>
     </ClInclude>
+    <ClInclude Include="$(DBPDir)include/mmx.h">
+      <Filter>DOSBox</Filter>
+    </ClInclude>
     <ClInclude Include="$(DBPDir)src/cpu/modrm.h">
       <Filter>DOSBox</Filter>
     </ClInclude>
@@ -666,21 +672,6 @@
       <Filter>DOSBox</Filter>
     </ClInclude>
     <ClInclude Include="$(DBPDir)src/ints/xms.h">
-      <Filter>DOSBox</Filter>
-    </ClInclude>
-    <ClInclude Include="$(DBPDir)dosbox_pure_run.h">
-      <Filter>DOSBox</Filter>
-    </ClInclude>
-    <ClInclude Include="$(DBPDir)dosbox_pure_osd.h">
-      <Filter>DOSBox</Filter>
-    </ClInclude>
-    <ClInclude Include="$(DBPDir)dosbox_pure_pad.h">
-      <Filter>DOSBox</Filter>
-    </ClInclude>
-    <ClInclude Include="$(DBPDir)dosbox_pure_sta.h">
-      <Filter>DOSBox</Filter>
-    </ClInclude>
-    <ClInclude Include="$(DBPDir)dosbox_pure_ver.h">
       <Filter>DOSBox</Filter>
     </ClInclude>
   </ItemGroup>
