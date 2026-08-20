@@ -29,6 +29,11 @@
 
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#include "resource.h"
+#endif
+
 #include <libretro-common/include/libretro.h>
 #include <include/cross.h>
 #include "vfs_implementation.h"
@@ -1935,6 +1940,36 @@ static void OnDraw()
 	if (!introdone) introdone = DrawIntro();
 }
 
+enum EEmbeddedArchiveLoadResult
+{
+	EMBEDDED_ARCHIVE_NOT_FOUND,
+	EMBEDDED_ARCHIVE_LOADED,
+	EMBEDDED_ARCHIVE_INVALID,
+};
+
+static EEmbeddedArchiveLoadResult LoadEmbeddedArchive(retro_game_info& game)
+{
+	#ifdef _WIN32
+	HMODULE module = GetModuleHandleW(NULL);
+	HRSRC resource_info = FindResourceW(module, MAKEINTRESOURCEW(IDR_EMBEDDED_ARCHIVE), MAKEINTRESOURCEW(10));
+	if (!resource_info) return EMBEDDED_ARCHIVE_NOT_FOUND;
+
+	const DWORD resource_size = SizeofResource(module, resource_info);
+	HGLOBAL resource = LoadResource(module, resource_info);
+	const void* resource_data = (resource ? LockResource(resource) : NULL);
+	if (!resource_size || !resource_data) return EMBEDDED_ARCHIVE_INVALID;
+
+	static const char logical_path[] = "embedded.dosz";
+	game.path = logical_path;
+	game.data = resource_data;
+	game.size = (size_t)resource_size;
+	return EMBEDDED_ARCHIVE_LOADED;
+	#else
+	(void)game;
+	return EMBEDDED_ARCHIVE_NOT_FOUND;
+	#endif
+}
+
 static void OnLoad(int argc, char *argv[])
 {
 	retro_system_info sys;
@@ -1955,9 +1990,9 @@ static void OnLoad(int argc, char *argv[])
 		if (!strcmp(argv[i], "-memory-archive") || !strcmp(argv[i], "--memory-archive")) memory_archive = true;
 	int argi = 1;
 	for (; argi < argc; argi++) { if (argv[argi][0] != '-') { game.path = argv[argi++]; break; } }
-	if (!game.path && ZL_Application::SettingsHas("default_content")) game.path = GetSetting("default_content");
 	if (memory_archive)
 	{
+		if (!game.path && ZL_Application::SettingsHas("default_content")) game.path = GetSetting("default_content");
 		MemoryArchiveData.clear();
 		const char* ext = (game.path ? strrchr(game.path, '.') : NULL);
 		const size_t ext_len = (ext ? strlen(ext + 1) : 0);
@@ -2006,6 +2041,22 @@ static void OnLoad(int argc, char *argv[])
 		game.size = MemoryArchiveData.size();
 		fprintf(stdout, "Loaded memory archive: %s (%llu bytes)\n", game.path, (unsigned long long)game.size);
 		fflush(stdout);
+	}
+	else if (!game.path)
+	{
+		const EEmbeddedArchiveLoadResult embedded_result = LoadEmbeddedArchive(game);
+		if (embedded_result == EMBEDDED_ARCHIVE_INVALID)
+		{
+			fprintf(stderr, "The embedded DOSZ resource is empty or unavailable.\n");
+			ZL_Application::Quit(1);
+			return;
+		}
+		if (embedded_result == EMBEDDED_ARCHIVE_LOADED)
+		{
+			fprintf(stdout, "Loaded embedded DOSZ resource (%llu bytes)\n", (unsigned long long)game.size);
+			fflush(stdout);
+		}
+		else if (ZL_Application::SettingsHas("default_content")) game.path = GetSetting("default_content");
 	}
 	retro_load_game(&game); //#4
 	for (; argi < argc; argi++) { if (argv[argi][0] != '-') { DBPS_AddDisc(argv[argi]); } }

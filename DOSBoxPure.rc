@@ -1,7 +1,9 @@
 #include <windows.h>
 #include <dosbox_pure_ver.h>
+#include "resource.h"
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 ZL ICON "DOSBoxPure.ico"
+IDR_EMBEDDED_ARCHIVE RCDATA "embedded\\phase3-smoke.dosz"
 1 VERSIONINFO
 	FILEVERSION     1,0,0,0
 	PRODUCTVERSION  1,0,0,0
