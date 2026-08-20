@@ -54,6 +54,7 @@
     <ResourceCompile>
       <Culture>0x009</Culture>
       <AdditionalIncludeDirectories>$(DBPDir)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions Condition="'$(EmbedDevelopmentPackage)'=='true'">DBP_INCLUDE_DEVELOPMENT_PACKAGE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
