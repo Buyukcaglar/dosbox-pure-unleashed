@@ -63,7 +63,7 @@ static bool DrawCoreShader, DoApplyInterfaceOptions, DoApplyGeometry, DoSave, Do
 static char Scaling;
 static int CRTFilter, AudioLatency;
 static float FastRate = 5.0f, SlowRate = 0.3f;
-static std::string PathSaves, PathSystem;
+static std::string PathSaves, PathSystem, EmbeddedPackageId;
 static std::vector<Bit8u> MemoryArchiveData;
 static ZL_Vector PointerLockPos;
 static ZL_Json ConfigCache, ConfigOverrides;
@@ -1987,6 +1987,126 @@ static EEmbeddedArchiveLoadResult LoadEmbeddedArchive(retro_game_info& game)
 	#endif
 }
 
+static bool HasExplicitContentArgument(int argc, char *argv[])
+{
+	for (int i = 1; i < argc; i++) if (argv[i][0] != '-') return true;
+	return false;
+}
+
+static std::string JoinPath(const std::string& base, const char* child)
+{
+	std::string path(base);
+	if (!path.empty() && path[path.length() - 1] != '/' && path[path.length() - 1] != '\\') path += CROSS_FILESPLIT;
+	return path.append(child);
+}
+
+static std::string GetEmbeddedPackageId(const void* data, size_t size)
+{
+	// Phase 6 metadata will supply a human-defined package ID. Until then, use a
+	// deterministic content identity so separate packages cannot share overlays
+	// and renaming the executable does not disconnect its saves.
+	const Bit8u* bytes = (const Bit8u*)data;
+	unsigned long long hash = 14695981039346656037ULL;
+	for (size_t i = 0; i != size; i++) { hash ^= bytes[i]; hash *= 1099511628211ULL; }
+	char package_id[64];
+	sprintf(package_id, "archive-%016llx-%llx", hash, (unsigned long long)size);
+	return package_id;
+}
+
+static bool EnsureWritableDirectory(const std::string& path)
+{
+	if (retro_vfs_mkdir_impl(path.c_str()) == -1) return false;
+
+	char probe_name[64];
+	#ifdef _WIN32
+	sprintf(probe_name, ".dosbox-pure-write-test-%lu.tmp", (unsigned long)GetCurrentProcessId());
+	#else
+	sprintf(probe_name, ".dosbox-pure-write-test-%llu.tmp", (unsigned long long)(size_t)&path);
+	#endif
+	const std::string probe_path = JoinPath(path, probe_name);
+	FILE* probe = fopen_wrap(probe_path.c_str(), "wb");
+	if (!probe) return false;
+	const unsigned char marker = 0xDB;
+	const bool write_ok = (fwrite(&marker, 1, 1, probe) == 1 && fflush(probe) == 0);
+	const bool close_ok = (fclose(probe) == 0);
+	#ifdef _WIN32
+	extern wchar_t* utf8_to_utf16_string_alloc(const char*);
+	wchar_t* probe_path_wide = utf8_to_utf16_string_alloc(probe_path.c_str());
+	const bool remove_ok = (probe_path_wide && DeleteFileW(probe_path_wide));
+	free(probe_path_wide);
+	#else
+	const bool remove_ok = (remove(probe_path.c_str()) == 0);
+	#endif
+	if (!remove_ok)
+		fprintf(stderr, "Unable to remove persistence write probe: %s\n", probe_path.c_str());
+	return (write_ok && close_ok);
+}
+
+static std::string GetExecutableDirectory(int argc, char *argv[])
+{
+	std::string path((argc && argv[0] && *argv[0]) ? argv[0] : ".");
+	path.append("/..");
+	Cross::NormalizePath(path);
+	Cross::MakePathAbsolute(path);
+	return path;
+}
+
+static bool GetLocalAppDataPersistenceRoot(std::string& root)
+{
+	#ifdef _WIN32
+	const DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", NULL, 0);
+	if (!required) return false;
+	std::vector<wchar_t> buffer(required);
+	const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", &buffer[0], required);
+	if (!length || length >= required) return false;
+	extern char* utf16_to_utf8_string_alloc(const wchar_t*);
+	char* local_app_data = utf16_to_utf8_string_alloc(&buffer[0]);
+	if (!local_app_data) return false;
+	root.assign(local_app_data);
+	free(local_app_data);
+	Cross::NormalizePath(root);
+	Cross::MakePathAbsolute(root);
+	root = JoinPath(root, "DOSBoxPureStandalone");
+	return true;
+	#else
+	(void)root;
+	return false;
+	#endif
+}
+
+static bool TryInitializeEmbeddedPersistence(const std::string& root, const std::string& package_id, ZL_String& settings_path)
+{
+	if (!EnsureWritableDirectory(root)) return false;
+	const std::string package_path = JoinPath(root, package_id.c_str());
+	const std::string system_path = JoinPath(root, "system");
+	if (!EnsureWritableDirectory(package_path) || !EnsureWritableDirectory(system_path)) return false;
+	PathSaves = package_path;
+	PathSystem = system_path;
+	settings_path.assign(package_path).append(1, CROSS_FILESPLIT).append("DOSBoxPure");
+	return true;
+}
+
+static bool InitializeEmbeddedPersistence(int argc, char *argv[], const std::string& package_id, ZL_String& settings_path)
+{
+	std::string primary_root;
+	if (GetLocalAppDataPersistenceRoot(primary_root) && TryInitializeEmbeddedPersistence(primary_root, package_id, settings_path))
+	{
+		fprintf(stdout, "Using embedded package persistence: %s\n", PathSaves.c_str());
+		fprintf(stdout, "Using shared system directory: %s\n", PathSystem.c_str());
+		return true;
+	}
+
+	const std::string fallback_root = GetExecutableDirectory(argc, argv);
+	fprintf(stderr, "Unable to use %%LOCALAPPDATA%%\\DOSBoxPureStandalone; trying executable directory: %s\n", fallback_root.c_str());
+	if (TryInitializeEmbeddedPersistence(fallback_root, package_id, settings_path))
+	{
+		fprintf(stdout, "Using fallback embedded package persistence: %s\n", PathSaves.c_str());
+		fprintf(stdout, "Using fallback shared system directory: %s\n", PathSystem.c_str());
+		return true;
+	}
+	return false;
+}
+
 static void OnLoad(int argc, char *argv[])
 {
 	retro_system_info sys;
@@ -2107,7 +2227,32 @@ static struct sDOSBoxPure : public ZL_Application
 	virtual void Load(int argc, char *argv[])
 	{
 		ZL_String basePath;
-		if (FILE* curdirf = fopen_wrap("DOSBoxPure.cfg", "rb")) // If cfg file exists in current working directory, use that
+		retro_game_info embedded_game = {0};
+		const EEmbeddedArchiveLoadResult embedded_result = (!HasExplicitContentArgument(argc, argv) ? LoadEmbeddedArchive(embedded_game) : EMBEDDED_ARCHIVE_NOT_FOUND);
+		if (embedded_result == EMBEDDED_ARCHIVE_INVALID)
+		{
+			fprintf(stderr, "The embedded DOSZ resource is empty or unavailable.\n");
+			#ifdef _WIN32
+			MessageBoxA(NULL, "The embedded game archive is empty or unavailable.", "DOSBox Pure Standalone", MB_OK | MB_ICONERROR);
+			#endif
+			ZL_Application::Quit(1);
+			return;
+		}
+		const bool embedded_package = (embedded_result == EMBEDDED_ARCHIVE_LOADED);
+		if (embedded_package)
+		{
+			EmbeddedPackageId = GetEmbeddedPackageId(embedded_game.data, embedded_game.size);
+			if (!InitializeEmbeddedPersistence(argc, argv, EmbeddedPackageId, basePath))
+			{
+				fprintf(stderr, "No writable persistence location is available for embedded package %s.\n", EmbeddedPackageId.c_str());
+				#ifdef _WIN32
+				MessageBoxA(NULL, "Neither Local AppData nor the executable directory is writable. Saves and settings cannot be stored.", "DOSBox Pure Standalone", MB_OK | MB_ICONERROR);
+				#endif
+				ZL_Application::Quit(1);
+				return;
+			}
+		}
+		else if (FILE* curdirf = fopen_wrap("DOSBoxPure.cfg", "rb")) // If cfg file exists in current working directory, use that
 		{
 			fclose(curdirf);
 			Cross::MakePathAbsolute(basePath.assign("DOSBoxPure")); // relative to current working directory
@@ -2158,19 +2303,22 @@ static struct sDOSBoxPure : public ZL_Application
 		}
 
 		ZL_Application::SettingsInit(basePath.c_str());
-		ZL_String customPathSaves = ZL_Application::SettingsGet("path_saves"), customPathSystem = ZL_Application::SettingsGet("path_system");
-		for (bool useCustomPathSaves = !customPathSaves.empty(), useCustomPathSystem = !customPathSystem.empty();;)
+		if (!embedded_package)
 		{
-			if (useCustomPathSaves) Cross::NormalizePath(Cross::MakePathAbsolute(PathSaves.assign(customPathSaves)));
-			else PathSaves.assign(basePath.c_str(), basePath.length() - 10).append("saves"); // home path is absolute
+			ZL_String customPathSaves = ZL_Application::SettingsGet("path_saves"), customPathSystem = ZL_Application::SettingsGet("path_system");
+			for (bool useCustomPathSaves = !customPathSaves.empty(), useCustomPathSystem = !customPathSystem.empty();;)
+			{
+				if (useCustomPathSaves) Cross::NormalizePath(Cross::MakePathAbsolute(PathSaves.assign(customPathSaves)));
+				else PathSaves.assign(basePath.c_str(), basePath.length() - 10).append("saves"); // home path is absolute
 
-			if (useCustomPathSystem) Cross::NormalizePath(Cross::MakePathAbsolute(PathSystem.assign(customPathSystem)));
-			else PathSystem.assign(basePath.c_str(), basePath.length() - 10).append("system");
+				if (useCustomPathSystem) Cross::NormalizePath(Cross::MakePathAbsolute(PathSystem.assign(customPathSystem)));
+				else PathSystem.assign(basePath.c_str(), basePath.length() - 10).append("system");
 
-			bool invalidPathSaves = (retro_vfs_mkdir_impl(PathSaves.c_str()) == -1), invalidPathSystem = (retro_vfs_mkdir_impl(PathSystem.c_str()) == -1);
-			if ((!invalidPathSaves || !useCustomPathSaves) && (!invalidPathSystem || !useCustomPathSystem)) break;
-			useCustomPathSaves &= !invalidPathSaves;
-			useCustomPathSystem &= !invalidPathSystem;
+				bool invalidPathSaves = (retro_vfs_mkdir_impl(PathSaves.c_str()) == -1), invalidPathSystem = (retro_vfs_mkdir_impl(PathSystem.c_str()) == -1);
+				if ((!invalidPathSaves || !useCustomPathSaves) && (!invalidPathSystem || !useCustomPathSystem)) break;
+				useCustomPathSaves &= !invalidPathSaves;
+				useCustomPathSystem &= !invalidPathSystem;
+			}
 		}
 
 		bool screen_fullscreen = (((*ZL_Application::SettingsGet("screen_fullscreen").c_str())|0x20) == 't'); // 't'rue
