@@ -28,6 +28,7 @@
 #include <ZL_Network.h>
 
 #include <vector>
+#include <set>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -66,7 +67,7 @@ static float FastRate = 5.0f, SlowRate = 0.3f;
 static std::string PathSaves, PathSystem, EmbeddedPackageId, EmbeddedPackageTitle, EmbeddedPackageStartup;
 static std::vector<Bit8u> MemoryArchiveData;
 static ZL_Vector PointerLockPos;
-static ZL_Json ConfigCache, ConfigOverrides;
+static ZL_Json ConfigCache, ConfigOverrides, ConfigDefaults;
 enum { FAST_FPS_LIMIT = 200 };
 
 static ZL_Surface srfCore, srfOSD;
@@ -521,9 +522,18 @@ static const char* GetSetting(const char* key, const char* defaultval = NULL)
 	if (ZL_Application::SettingsHas(key))
 	{
 		ZL_String val = ZL_Application::SettingsGet(key);
-		if (val.empty()) return defaultval;
+		if (!val.empty())
+		{
+			ZL_Json it = ConfigCache[key];
+			it.SetString(val.c_str());
+			return it.GetString();
+		}
+	}
+	if (ZL_Json dv = ConfigDefaults.GetByKey(key))
+	{
+		if (dv.GetType() != ZL_Json::TYPE_STRING || !dv.GetString()[0]) return defaultval;
 		ZL_Json it = ConfigCache[key];
-		it.SetString(val.empty() ? NULL : val.c_str());
+		it.SetString(dv.GetString());
 		return it.GetString();
 	}
 	return defaultval;
@@ -2027,6 +2037,8 @@ enum EEmbeddedMetadataLoadResult
 struct SEmbeddedPackageMetadata
 {
 	std::string PackageId, Title, Startup;
+	bool HasDefaultConfig;
+	SEmbeddedPackageMetadata() : HasDefaultConfig(false) { }
 };
 
 static bool IsAsciiEqualNoCase(const char* a, const char* b)
@@ -2052,6 +2064,30 @@ static bool IsValidPackageId(const char* package_id)
 		return false;
 	}
 	return true;
+}
+
+static bool IsValidEmbeddedStartup(const char* startup)
+{
+	if (!startup) return false;
+	const size_t length = strlen(startup);
+	if (!length || length > 255 || startup[0] == '\\' || startup[0] == '/' || strchr(startup, ':')) return false;
+	size_t segment_start = 0;
+	for (size_t i = 0; i <= length; i++)
+	{
+		const unsigned char c = (unsigned char)startup[i];
+		if (!c || c == '\\' || c == '/')
+		{
+			const size_t segment_length = i - segment_start;
+			if (!segment_length || (segment_length == 1 && startup[segment_start] == '.') || (segment_length == 2 && startup[segment_start] == '.' && startup[segment_start + 1] == '.')) return false;
+			segment_start = i + 1;
+			continue;
+		}
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) continue;
+		if (c == '.' || c == '_' || c == '-' || c == '$' || c == '!' || c == '#' || c == '%' || c == '\'' || c == '(' || c == ')' || c == '@' || c == '^' || c == '{' || c == '}' || c == '~') continue;
+		return false;
+	}
+	const char* extension = strrchr(startup, '.');
+	return (extension && (IsAsciiEqualNoCase(extension, ".EXE") || IsAsciiEqualNoCase(extension, ".COM") || IsAsciiEqualNoCase(extension, ".BAT")));
 }
 
 static bool IsValidUtf8Title(const char* title)
@@ -2146,19 +2182,100 @@ static EEmbeddedMetadataLoadResult LoadEmbeddedPackageMetadata(const retro_game_
 	}
 
 	ZL_Json startup = document.GetByKey("startup");
-	if (startup && (startup.GetType() != ZL_Json::TYPE_STRING || !IsAsciiEqualNoCase(startup.GetString(), "DOSBOX.BAT")))
+	if (startup && (startup.GetType() != ZL_Json::TYPE_STRING || !IsValidEmbeddedStartup(startup.GetString())))
 	{
-		error = "The embedded package metadata startup value is unsupported; Phase 6 supports DOSBOX.BAT.";
+		error = "The embedded package metadata startup must identify a safe archive-relative .EXE, .COM or .BAT file.";
+		return EMBEDDED_METADATA_INVALID;
+	}
+
+	ZL_Json default_config_resource = document.GetByKey("default_config_resource");
+	if (default_config_resource && (default_config_resource.GetType() != ZL_Json::TYPE_NUMBER || default_config_resource.GetFloat(-1) != IDR_EMBEDDED_DEFAULT_CONFIG))
+	{
+		error = "The embedded package metadata default_config_resource is unsupported.";
 		return EMBEDDED_METADATA_INVALID;
 	}
 
 	metadata.PackageId = package_id.GetString();
 	metadata.Title = (title ? title.GetString() : "");
 	metadata.Startup = (startup ? startup.GetString() : "DOSBOX.BAT");
+	metadata.HasDefaultConfig = !!default_config_resource;
 	return EMBEDDED_METADATA_LOADED;
 	#else
 	(void)archive; (void)metadata; (void)error;
 	return EMBEDDED_METADATA_NOT_FOUND;
+	#endif
+}
+
+const char* DBPS_GetPackageStartup()
+{
+	return EmbeddedPackageStartup.c_str();
+}
+
+static bool IsValidConfigKey(const char* key)
+{
+	if (!key) return false;
+	const size_t length = strlen(key);
+	if (!length || length > 128) return false;
+	for (size_t i = 0; i != length; i++)
+	{
+		const unsigned char c = (unsigned char)key[i];
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-') continue;
+		return false;
+	}
+	return true;
+}
+
+static bool LoadEmbeddedDefaultConfig(std::string& error)
+{
+	#ifdef _WIN32
+	HMODULE module = GetModuleHandleW(NULL);
+	HRSRC resource_info = FindResourceW(module, MAKEINTRESOURCEW(IDR_EMBEDDED_DEFAULT_CONFIG), MAKEINTRESOURCEW(10));
+	if (!resource_info)
+	{
+		error = "The package declares a default configuration, but resource 103 is missing.";
+		return false;
+	}
+
+	const DWORD resource_size = SizeofResource(module, resource_info);
+	HGLOBAL resource = LoadResource(module, resource_info);
+	const void* resource_data = (resource ? LockResource(resource) : NULL);
+	if (!resource_size || resource_size > 1024 * 1024 || !resource_data)
+	{
+		error = "The embedded default configuration is empty, unavailable, or larger than 1 MiB.";
+		return false;
+	}
+
+	ZL_Json document((const char*)resource_data, (size_t)resource_size);
+	if (document.GetType() != ZL_Json::TYPE_OBJECT)
+	{
+		error = "The embedded default configuration is not a valid JSON object.";
+		return false;
+	}
+
+	std::set<std::string> keys;
+	for (const ZL_Json& setting : document)
+	{
+		const char* key = setting.GetKey();
+		const char* value = setting.GetString();
+		if (!IsValidConfigKey(key) || setting.GetType() != ZL_Json::TYPE_STRING || !value || strlen(value) > 4096)
+		{
+			error = "The embedded default configuration must contain only safe keys and string values no longer than 4096 bytes.";
+			return false;
+		}
+		if (!keys.insert(key).second)
+		{
+			error = "The embedded default configuration contains a duplicate key.";
+			return false;
+		}
+	}
+
+	ConfigDefaults = document;
+	ConfigCache.Clear();
+	fprintf(stdout, "Loaded %llu embedded default configuration values.\n", (unsigned long long)ConfigDefaults.Size());
+	return true;
+	#else
+	(void)error;
+	return false;
 	#endif
 }
 
@@ -2407,6 +2524,15 @@ static struct sDOSBoxPure : public ZL_Application
 				EmbeddedPackageId = metadata.PackageId;
 				EmbeddedPackageTitle = metadata.Title;
 				EmbeddedPackageStartup = metadata.Startup;
+				if (metadata.HasDefaultConfig && !LoadEmbeddedDefaultConfig(metadata_error))
+				{
+					fprintf(stderr, "Invalid embedded default configuration: %s\n", metadata_error.c_str());
+					#ifdef _WIN32
+					MessageBoxA(NULL, metadata_error.c_str(), "DOSBox Pure Standalone", MB_OK | MB_ICONERROR);
+					#endif
+					ZL_Application::Quit(1);
+					return;
+				}
 				fprintf(stdout, "Loaded embedded package metadata: format=1 package_id=%s startup=%s\n", EmbeddedPackageId.c_str(), EmbeddedPackageStartup.c_str());
 			}
 			else
@@ -2495,10 +2621,10 @@ static struct sDOSBoxPure : public ZL_Application
 			}
 		}
 
-		bool screen_fullscreen = (((*ZL_Application::SettingsGet("screen_fullscreen").c_str())|0x20) == 't'); // 't'rue
-		bool screen_maximized = (((*ZL_Application::SettingsGet("screen_maximized").c_str())|0x20) == 't'); // 't'rue
-		int screen_width = atoi(ZL_Application::SettingsGet("screen_width").c_str());
-		int screen_height = atoi(ZL_Application::SettingsGet("screen_height").c_str());
+		bool screen_fullscreen = (((*GetSetting("screen_fullscreen", "false"))|0x20) == 't'); // 't'rue
+		bool screen_maximized = (((*GetSetting("screen_maximized", "false"))|0x20) == 't'); // 't'rue
+		int screen_width = atoi(GetSetting("screen_width", "0"));
+		int screen_height = atoi(GetSetting("screen_height", "0"));
 
 		const char* display_title = (embedded_package && !EmbeddedPackageTitle.empty() ? EmbeddedPackageTitle.c_str() : "DOSBox Pure");
 		if (!ZL_Display::Init(display_title, (screen_width < 80 ? 1280 : screen_width), (screen_height < 60 ? 720 : screen_height), ZL_DISPLAY_RESIZABLE | ZL_DISPLAY_MINIMIZEDAUDIO | ZL_DISPLAY_PREVENTALTENTER | ZL_DISPLAY_PREVENTALTF4 | (screen_fullscreen ? ZL_DISPLAY_FULLSCREEN : 0) | (screen_maximized ? ZL_DISPLAY_MAXIMIZED : 0))) return;
