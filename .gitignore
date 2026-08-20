@@ -45,3 +45,4 @@ Release-msys/
 *.so
 *.dylib
 *.cfg
+embedded/phase3-smoke/DISK.IMA
