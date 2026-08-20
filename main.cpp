@@ -56,6 +56,7 @@ static char Scaling;
 static int CRTFilter, AudioLatency;
 static float FastRate = 5.0f, SlowRate = 0.3f;
 static std::string PathSaves, PathSystem;
+static std::vector<Bit8u> MemoryArchiveData;
 static ZL_Vector PointerLockPos;
 static ZL_Json ConfigCache, ConfigOverrides;
 enum { FAST_FPS_LIMIT = 200 };
@@ -1949,9 +1950,63 @@ static void OnLoad(int argc, char *argv[])
 	DBPS_InitLEDs(key_modifiers);
 
 	retro_game_info game = {0};
+	bool memory_archive = false;
+	for (int i = 1; i < argc; i++)
+		if (!strcmp(argv[i], "-memory-archive") || !strcmp(argv[i], "--memory-archive")) memory_archive = true;
 	int argi = 1;
 	for (; argi < argc; argi++) { if (argv[argi][0] != '-') { game.path = argv[argi++]; break; } }
 	if (!game.path && ZL_Application::SettingsHas("default_content")) game.path = GetSetting("default_content");
+	if (memory_archive)
+	{
+		MemoryArchiveData.clear();
+		const char* ext = (game.path ? strrchr(game.path, '.') : NULL);
+		const size_t ext_len = (ext ? strlen(ext + 1) : 0);
+		const bool is_zip = (ext_len == 3 && (ext[1] | 0x20) == 'z' && (ext[2] | 0x20) == 'i' && (ext[3] | 0x20) == 'p');
+		const bool is_dosz = (ext_len == 4 && (ext[1] | 0x20) == 'd' && (ext[2] | 0x20) == 'o' && (ext[3] | 0x20) == 's' && (ext[4] | 0x20) == 'z');
+		if (!game.path || !*game.path || (!is_zip && !is_dosz))
+		{
+			fprintf(stderr, "Memory archive mode requires a ZIP or DOSZ content path.\n");
+			ZL_Application::Quit(1);
+			return;
+		}
+
+		FILE* f = fopen_wrap(game.path, "rb");
+		if (!f || fseek_wrap(f, 0, SEEK_END))
+		{
+			if (f) fclose(f);
+			fprintf(stderr, "Unable to open memory archive: %s\n", game.path);
+			ZL_Application::Quit(1);
+			return;
+		}
+		const Bit64s file_size = (Bit64s)ftell_wrap(f);
+		if (file_size <= 0 || (Bit64u)file_size > (Bit64u)(size_t)-1 || fseek_wrap(f, 0, SEEK_SET))
+		{
+			fclose(f);
+			fprintf(stderr, "Invalid or unsupported memory archive size: %s\n", game.path);
+			ZL_Application::Quit(1);
+			return;
+		}
+
+		MemoryArchiveData.resize((size_t)file_size);
+		for (size_t offset = 0; offset != MemoryArchiveData.size();)
+		{
+			size_t read = fread(&MemoryArchiveData[offset], 1, MemoryArchiveData.size() - offset, f);
+			if (!read)
+			{
+				fclose(f);
+				MemoryArchiveData.clear();
+				fprintf(stderr, "Unable to read memory archive: %s\n", game.path);
+				ZL_Application::Quit(1);
+				return;
+			}
+			offset += read;
+		}
+		fclose(f);
+		game.data = &MemoryArchiveData[0];
+		game.size = MemoryArchiveData.size();
+		fprintf(stdout, "Loaded memory archive: %s (%llu bytes)\n", game.path, (unsigned long long)game.size);
+		fflush(stdout);
+	}
 	retro_load_game(&game); //#4
 	for (; argi < argc; argi++) { if (argv[argi][0] != '-') { DBPS_AddDisc(argv[argi]); } }
 
