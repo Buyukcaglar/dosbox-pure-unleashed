@@ -1,3 +1,4 @@
 #pragma once
 
 #define IDR_EMBEDDED_ARCHIVE 101
+#define IDR_EMBEDDED_METADATA 102

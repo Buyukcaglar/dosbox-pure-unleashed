@@ -1,0 +1,8 @@
+{
+  "format_version": 1,
+  "package_id": "org.dosboxpurestandalone.phase3-smoke",
+  "title": "DOSBox Pure Standalone - Phase 3 Smoke Test",
+  "startup": "DOSBOX.BAT",
+  "archive_resource": 101,
+  "archive_identity": "edba7044deb62010-786"
+}

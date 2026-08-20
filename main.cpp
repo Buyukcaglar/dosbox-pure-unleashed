@@ -63,7 +63,7 @@ static bool DrawCoreShader, DoApplyInterfaceOptions, DoApplyGeometry, DoSave, Do
 static char Scaling;
 static int CRTFilter, AudioLatency;
 static float FastRate = 5.0f, SlowRate = 0.3f;
-static std::string PathSaves, PathSystem, EmbeddedPackageId;
+static std::string PathSaves, PathSystem, EmbeddedPackageId, EmbeddedPackageTitle, EmbeddedPackageStartup;
 static std::vector<Bit8u> MemoryArchiveData;
 static ZL_Vector PointerLockPos;
 static ZL_Json ConfigCache, ConfigOverrides;
@@ -1332,7 +1332,8 @@ bool DBPS_HaveSaveSlot()
 void DBPS_OnContentLoad(const char* name, const char* dir, size_t dirlen)
 {
 	extern void ZL_SdlSetTitle(const char* newtitle);
-	ZL_SdlSetTitle(ZL_String("DOSBox Pure - ").append(name).c_str());
+	if (EmbeddedPackageMode && !EmbeddedPackageTitle.empty()) ZL_SdlSetTitle(EmbeddedPackageTitle.c_str());
+	else ZL_SdlSetTitle(ZL_String("DOSBox Pure - ").append(name).c_str());
 	if (dirlen)
 	{
 		ZL_String contentPath(dir, dirlen + (size_t)(dirlen == 2 && dir[1] == ':' && dir[2] == '\\'));
@@ -2000,17 +2001,165 @@ static std::string JoinPath(const std::string& base, const char* child)
 	return path.append(child);
 }
 
-static std::string GetEmbeddedPackageId(const void* data, size_t size)
+static std::string GetEmbeddedArchiveIdentity(const void* data, size_t size)
 {
-	// Phase 6 metadata will supply a human-defined package ID. Until then, use a
-	// deterministic content identity so separate packages cannot share overlays
-	// and renaming the executable does not disconnect its saves.
 	const Bit8u* bytes = (const Bit8u*)data;
 	unsigned long long hash = 14695981039346656037ULL;
 	for (size_t i = 0; i != size; i++) { hash ^= bytes[i]; hash *= 1099511628211ULL; }
-	char package_id[64];
-	sprintf(package_id, "archive-%016llx-%llx", hash, (unsigned long long)size);
-	return package_id;
+	char identity[48];
+	sprintf(identity, "%016llx-%llx", hash, (unsigned long long)size);
+	return identity;
+}
+
+static std::string GetArchiveDerivedPackageId(const void* data, size_t size)
+{
+	// Compatibility identity for Phase 3/4 executables that do not carry Phase 6 metadata.
+	return std::string("archive-").append(GetEmbeddedArchiveIdentity(data, size));
+}
+
+enum EEmbeddedMetadataLoadResult
+{
+	EMBEDDED_METADATA_NOT_FOUND,
+	EMBEDDED_METADATA_LOADED,
+	EMBEDDED_METADATA_INVALID,
+};
+
+struct SEmbeddedPackageMetadata
+{
+	std::string PackageId, Title, Startup;
+};
+
+static bool IsAsciiEqualNoCase(const char* a, const char* b)
+{
+	for (;; a++, b++)
+	{
+		const unsigned char ca = (unsigned char)*a, cb = (unsigned char)*b;
+		if ((ca | 0x20) != (cb | 0x20)) return false;
+		if (!ca) return true;
+	}
+}
+
+static bool IsValidPackageId(const char* package_id)
+{
+	if (!package_id) return false;
+	const size_t length = strlen(package_id);
+	if (!length || length > 128 || IsAsciiEqualNoCase(package_id, "system")) return false;
+	for (size_t i = 0; i != length; i++)
+	{
+		const unsigned char c = (unsigned char)package_id[i];
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) continue;
+		if (i && i + 1 != length && (c == '.' || c == '-' || c == '_')) continue;
+		return false;
+	}
+	return true;
+}
+
+static bool IsValidUtf8Title(const char* title)
+{
+	if (!title) return false;
+	const unsigned char* p = (const unsigned char*)title;
+	const size_t length = strlen(title);
+	if (!length || length > 256) return false;
+	for (const unsigned char* end = p + length; p != end;)
+	{
+		const unsigned char c = *p++;
+		if (c < 0x20 || c == 0x7f) return false;
+		if (c < 0x80) continue;
+		if (c >= 0xc2 && c <= 0xdf)
+		{
+			if (p == end || (*p & 0xc0) != 0x80) return false;
+			p++;
+		}
+		else if (c >= 0xe0 && c <= 0xef)
+		{
+			if (end - p < 2 || (p[0] & 0xc0) != 0x80 || (p[1] & 0xc0) != 0x80) return false;
+			if ((c == 0xe0 && p[0] < 0xa0) || (c == 0xed && p[0] >= 0xa0)) return false;
+			p += 2;
+		}
+		else if (c >= 0xf0 && c <= 0xf4)
+		{
+			if (end - p < 3 || (p[0] & 0xc0) != 0x80 || (p[1] & 0xc0) != 0x80 || (p[2] & 0xc0) != 0x80) return false;
+			if ((c == 0xf0 && p[0] < 0x90) || (c == 0xf4 && p[0] >= 0x90)) return false;
+			p += 3;
+		}
+		else return false;
+	}
+	return true;
+}
+
+static EEmbeddedMetadataLoadResult LoadEmbeddedPackageMetadata(const retro_game_info& archive, SEmbeddedPackageMetadata& metadata, std::string& error)
+{
+	#ifdef _WIN32
+	HMODULE module = GetModuleHandleW(NULL);
+	HRSRC resource_info = FindResourceW(module, MAKEINTRESOURCEW(IDR_EMBEDDED_METADATA), MAKEINTRESOURCEW(10));
+	if (!resource_info) return EMBEDDED_METADATA_NOT_FOUND;
+
+	const DWORD resource_size = SizeofResource(module, resource_info);
+	HGLOBAL resource = LoadResource(module, resource_info);
+	const void* resource_data = (resource ? LockResource(resource) : NULL);
+	if (!resource_size || resource_size > 64 * 1024 || !resource_data)
+	{
+		error = "The embedded package metadata is empty, unavailable, or larger than 64 KiB.";
+		return EMBEDDED_METADATA_INVALID;
+	}
+
+	ZL_Json document((const char*)resource_data, (size_t)resource_size);
+	if (document.GetType() != ZL_Json::TYPE_OBJECT)
+	{
+		error = "The embedded package metadata is not valid JSON object data.";
+		return EMBEDDED_METADATA_INVALID;
+	}
+
+	ZL_Json format_version = document.GetByKey("format_version");
+	if (format_version.GetType() != ZL_Json::TYPE_NUMBER || format_version.GetFloat(-1) != 1)
+	{
+		error = "The embedded package metadata format_version is missing or unsupported.";
+		return EMBEDDED_METADATA_INVALID;
+	}
+
+	ZL_Json package_id = document.GetByKey("package_id");
+	if (package_id.GetType() != ZL_Json::TYPE_STRING || !IsValidPackageId(package_id.GetString()))
+	{
+		error = "The embedded package metadata package_id is missing or is not a safe directory name.";
+		return EMBEDDED_METADATA_INVALID;
+	}
+
+	ZL_Json archive_resource = document.GetByKey("archive_resource");
+	if (archive_resource.GetType() != ZL_Json::TYPE_NUMBER || archive_resource.GetFloat(-1) != IDR_EMBEDDED_ARCHIVE)
+	{
+		error = "The embedded package metadata archive_resource does not identify the embedded archive.";
+		return EMBEDDED_METADATA_INVALID;
+	}
+
+	ZL_Json archive_identity = document.GetByKey("archive_identity");
+	if (archive_identity.GetType() != ZL_Json::TYPE_STRING || GetEmbeddedArchiveIdentity(archive.data, archive.size) != archive_identity.GetString())
+	{
+		error = "The embedded package metadata does not match the embedded game archive.";
+		return EMBEDDED_METADATA_INVALID;
+	}
+
+	ZL_Json title = document.GetByKey("title");
+	if (title && (title.GetType() != ZL_Json::TYPE_STRING || !IsValidUtf8Title(title.GetString())))
+	{
+		error = "The embedded package metadata title is empty, too long, contains control characters, or is not valid UTF-8.";
+		return EMBEDDED_METADATA_INVALID;
+	}
+
+	ZL_Json startup = document.GetByKey("startup");
+	if (startup && (startup.GetType() != ZL_Json::TYPE_STRING || !IsAsciiEqualNoCase(startup.GetString(), "DOSBOX.BAT")))
+	{
+		error = "The embedded package metadata startup value is unsupported; Phase 6 supports DOSBOX.BAT.";
+		return EMBEDDED_METADATA_INVALID;
+	}
+
+	metadata.PackageId = package_id.GetString();
+	metadata.Title = (title ? title.GetString() : "");
+	metadata.Startup = (startup ? startup.GetString() : "DOSBOX.BAT");
+	return EMBEDDED_METADATA_LOADED;
+	#else
+	(void)archive; (void)metadata; (void)error;
+	return EMBEDDED_METADATA_NOT_FOUND;
+	#endif
 }
 
 static bool EnsureWritableDirectory(const std::string& path)
@@ -2241,7 +2390,32 @@ static struct sDOSBoxPure : public ZL_Application
 		const bool embedded_package = (embedded_result == EMBEDDED_ARCHIVE_LOADED);
 		if (embedded_package)
 		{
-			EmbeddedPackageId = GetEmbeddedPackageId(embedded_game.data, embedded_game.size);
+			SEmbeddedPackageMetadata metadata;
+			std::string metadata_error;
+			const EEmbeddedMetadataLoadResult metadata_result = LoadEmbeddedPackageMetadata(embedded_game, metadata, metadata_error);
+			if (metadata_result == EMBEDDED_METADATA_INVALID)
+			{
+				fprintf(stderr, "Invalid embedded package metadata: %s\n", metadata_error.c_str());
+				#ifdef _WIN32
+				MessageBoxA(NULL, metadata_error.c_str(), "DOSBox Pure Standalone", MB_OK | MB_ICONERROR);
+				#endif
+				ZL_Application::Quit(1);
+				return;
+			}
+			if (metadata_result == EMBEDDED_METADATA_LOADED)
+			{
+				EmbeddedPackageId = metadata.PackageId;
+				EmbeddedPackageTitle = metadata.Title;
+				EmbeddedPackageStartup = metadata.Startup;
+				fprintf(stdout, "Loaded embedded package metadata: format=1 package_id=%s startup=%s\n", EmbeddedPackageId.c_str(), EmbeddedPackageStartup.c_str());
+			}
+			else
+			{
+				EmbeddedPackageId = GetArchiveDerivedPackageId(embedded_game.data, embedded_game.size);
+				EmbeddedPackageTitle.clear();
+				EmbeddedPackageStartup = "DOSBOX.BAT";
+				fprintf(stderr, "Embedded package metadata resource not found; using compatibility package_id=%s.\n", EmbeddedPackageId.c_str());
+			}
 			if (!InitializeEmbeddedPersistence(argc, argv, EmbeddedPackageId, basePath))
 			{
 				fprintf(stderr, "No writable persistence location is available for embedded package %s.\n", EmbeddedPackageId.c_str());
@@ -2326,7 +2500,8 @@ static struct sDOSBoxPure : public ZL_Application
 		int screen_width = atoi(ZL_Application::SettingsGet("screen_width").c_str());
 		int screen_height = atoi(ZL_Application::SettingsGet("screen_height").c_str());
 
-		if (!ZL_Display::Init("DOSBox Pure", (screen_width < 80 ? 1280 : screen_width), (screen_height < 60 ? 720 : screen_height), ZL_DISPLAY_RESIZABLE | ZL_DISPLAY_MINIMIZEDAUDIO | ZL_DISPLAY_PREVENTALTENTER | ZL_DISPLAY_PREVENTALTF4 | (screen_fullscreen ? ZL_DISPLAY_FULLSCREEN : 0) | (screen_maximized ? ZL_DISPLAY_MAXIMIZED : 0))) return;
+		const char* display_title = (embedded_package && !EmbeddedPackageTitle.empty() ? EmbeddedPackageTitle.c_str() : "DOSBox Pure");
+		if (!ZL_Display::Init(display_title, (screen_width < 80 ? 1280 : screen_width), (screen_height < 60 ? 720 : screen_height), ZL_DISPLAY_RESIZABLE | ZL_DISPLAY_MINIMIZEDAUDIO | ZL_DISPLAY_PREVENTALTENTER | ZL_DISPLAY_PREVENTALTF4 | (screen_fullscreen ? ZL_DISPLAY_FULLSCREEN : 0) | (screen_maximized ? ZL_DISPLAY_MAXIMIZED : 0))) return;
 		ZL_Display::ClearFill(ZL_Color::White);
 		ZL_Display::SetAA(true);
 		ZL_Input::Init();
