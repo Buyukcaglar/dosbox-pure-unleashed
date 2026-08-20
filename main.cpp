@@ -56,6 +56,9 @@ enum EHotkeyFKeys
 static unsigned short HotkeyMod;
 static unsigned char ThrottleMode, LastAudioThrottleMode;
 static bool ThrottlePaused, SpeedModHold, DisableSystemALT, UseMiddleMouseMenu, PointerLock, DrawStretched, VariablesUpdated;
+// Dedicated embedded packages suppress the emulator presentation until their DOS program starts.
+static bool EmbeddedPackageMode, EmbeddedGameStarted, EmbeddedVideoReadyPending;
+static unsigned CoreVideoFrameSerial, EmbeddedVideoReadyFrameSerial;
 static bool DrawCoreShader, DoApplyInterfaceOptions, DoApplyGeometry, DoSave, DoLoad, AudioSkip, DefaultPointerLock;
 static char Scaling;
 static int CRTFilter, AudioLatency;
@@ -1166,6 +1169,7 @@ static bool AudioMix(short* buffer, unsigned int samples, bool need_mix)
 static void RETRO_CALLCONV retro_video_refresh_cb(const void *data, unsigned width, unsigned height, size_t pitch)
 {
 	if (!data) return; // skipped frame
+	CoreVideoFrameSerial++;
 	ZL_ASSERT(width <= (unsigned)srfCore.GetWidth() && height <= (unsigned)srfCore.GetHeight() && data == RETRO_HW_FRAME_BUFFER_VALID); // only accept HWContext drawing with NULL data
 	float scaleX = (float)width / srfCore.GetWidth(), scaleY = (float)height / srfCore.GetHeight();
 	if (scaleX != srfCore.GetScaleW() || scaleY != srfCore.GetScaleH())
@@ -1837,6 +1841,18 @@ static void OnDraw()
 			for (retro_time_t rt = dbp_cpu_features_get_time_usec(), rtMax = rt + ((retro_time_t)1200000 / (retro_time_t)av.timing.fps); rt < rtMax; rt = dbp_cpu_features_get_time_usec())
 				retro_run();
 	}
+	if (EmbeddedPackageMode && !EmbeddedGameStarted)
+	{
+		if (!DBPS_IsStartupVideoReady()) EmbeddedVideoReadyPending = false;
+		else if (!EmbeddedVideoReadyPending)
+		{
+			EmbeddedVideoReadyPending = true;
+			EmbeddedVideoReadyFrameSerial = CoreVideoFrameSerial;
+		}
+		// The mode can change before the hardware-rendered surface receives its new pixels. Waiting
+		// for fresh submitted frames prevents the last DOS frame from flashing during that handoff.
+		else if ((CoreVideoFrameSerial - EmbeddedVideoReadyFrameSerial) >= 3) EmbeddedGameStarted = true;
+	}
 
 	if (DoSave) RunSave();
 	if (DoLoad) RunLoad();
@@ -1849,6 +1865,7 @@ static void OnDraw()
 	ZL_Display::ClearFill();
 
 	float win_w = ZLWIDTH, win_h = ZLHEIGHT, win_ar = win_w / win_h;
+	if (!EmbeddedPackageMode || EmbeddedGameStarted)
 	{
 		const float VerticesBox[] = { core_rec.left,core_rec.high , core_rec.right,core_rec.high , core_rec.left,core_rec.low , core_rec.right,core_rec.low };
 		const float u = srfCore.GetScaleW(), v = srfCore.GetScaleH(), TexCoordBox[] = { 0,v , u,v , 0,0 , u,0 };
@@ -1937,7 +1954,7 @@ static void OnDraw()
 	#endif
 
 	static bool introdone;
-	if (!introdone) introdone = DrawIntro();
+	if (!EmbeddedPackageMode && !introdone) introdone = DrawIntro();
 }
 
 enum EEmbeddedArchiveLoadResult
@@ -2053,6 +2070,12 @@ static void OnLoad(int argc, char *argv[])
 		}
 		if (embedded_result == EMBEDDED_ARCHIVE_LOADED)
 		{
+			EmbeddedPackageMode = true;
+			EmbeddedGameStarted = false;
+			EmbeddedVideoReadyPending = false;
+			// Allow the top-level EXIT in DOSBOX.BAT to close the dedicated executable immediately.
+			ConfigOverrides["dosbox_pure_menu_time"].SetString("0");
+			ConfigCache.Erase("dosbox_pure_menu_time");
 			fprintf(stdout, "Loaded embedded DOSZ resource (%llu bytes)\n", (unsigned long long)game.size);
 			fflush(stdout);
 		}
