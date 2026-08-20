@@ -15,12 +15,12 @@ IDR_EMBEDDED_METADATA RCDATA "embedded\\phase3-smoke.json"
 	{
 		BLOCK "040904b0"
 		{
-			VALUE "FileDescription", "DOSBoxPure"
+			VALUE "FileDescription", "DOSBoxPureStandAlone"
 			VALUE "FileVersion", DOSBOX_PURE_VERSION_STR
-			VALUE "ProductName", "DOSBoxPure"
+			VALUE "ProductName", "DOSBoxPureStandAlone"
 			VALUE "ProductVersion", DOSBOX_PURE_VERSION_STR
-			VALUE "InternalName", "DOSBoxPure"
-			VALUE "OriginalFilename", "DOSBoxPure.exe"
+			VALUE "InternalName", "DOSBoxPureStandAlone"
+			VALUE "OriginalFilename", "DOSBoxPureStandAlone.exe"
 			VALUE "LegalCopyright", "2025"
 		}
 	}

@@ -8,7 +8,7 @@ This project is a standalone version for desktop platforms of the [libretro core
 ## Download
 You can download the latest version of DOSBox Pure on [itch.io](https://schelling.itch.io/dosbox-pure) or from the [Releases page here](https://github.com/schellingb/dosbox-pure-unleashed/releases/latest).
 
-Just extract the ZIP file and then run DOSBoxPure.exe.
+Just extract the ZIP file and then run DOSBoxPureStandAlone.exe.
 
 On macOS if you get an error that the program is damaged or otherwise can't be run, you need to open the Terminal app and execute this command to allow it to be executed:
 ```sh
@@ -247,7 +247,7 @@ will reveal further options to customize it.
 The program uses a configuration file DOSBoxPure.cfg which it will create automatically.
 Next to the configuration file, it will also create and use two folders `saves` (for game save data and save states) and `system` (for operating system images, SoundFonts2 and MT-32 ROM files).
 
-On Windows it will by default use the folder DOSBoxPure.exe exists in but it can be changed by creating a folder called `DOSBoxPure` under the users Roaming AppData folder.
+On Windows it will by default use the folder DOSBoxPureStandAlone.exe exists in but it can be changed by creating a folder called `DOSBoxPure` under the users Roaming AppData folder.
 On Linux and macOS it will by default use a subfolder in the home folder but it can be changed by creating a file called `DOSBoxPure.cfg` in the current directory or next to the executable.
 
 Furthermore, the `saves` and `system` folders can be set to a custom path by adding a new record to DOSBoxPure.cfg with the keys `path_saves` or `path_system`.
@@ -304,7 +304,7 @@ To build DOSBox Pure Unleashed you will need to download/checkout this repositor
 
 ### Windows
 Open `/dosbox-pure-unleashed/DOSBoxPure-vs.sln` in Visual Studio (all versions from 2012 and up are supported)
-and press build to build `DOSBoxPure.exe`.
+and press build to build `DOSBoxPureStandAlone.exe`.
 
 ### Linux
 To build under linux, make sure GCC (package g++) and GNU Make (package make) are installed.  

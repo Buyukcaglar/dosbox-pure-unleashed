@@ -2,6 +2,7 @@
 <Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="Globals">
     <ProjectName>DOSBoxPure</ProjectName>
+    <TargetName>DOSBoxPureStandAlone</TargetName>
     <ZillaLibDir>../ZillaLib</ZillaLibDir>
     <DBPDir>../dosbox-pure/</DBPDir>
     <ProjectGuid>{4BD8F2DE-13A1-D8E3-52DC-B32FF52F7483}</ProjectGuid>

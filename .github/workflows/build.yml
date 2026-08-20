@@ -39,7 +39,7 @@ jobs:
     - uses: actions/upload-artifact@main
       with:
         name: dosbox-pure-unleashed_win64
-        path: main/Release-vs2026x64/DOSBoxPure.exe
+        path: main/Release-vs2026x64/DOSBoxPureStandAlone.exe
 
   build-win32-msvc:
     runs-on: windows-latest
@@ -67,7 +67,7 @@ jobs:
     - uses: actions/upload-artifact@main
       with:
         name: dosbox-pure-unleashed_win32
-        path: main/Release-vs2026/DOSBoxPure.exe
+        path: main/Release-vs2026/DOSBoxPureStandAlone.exe
 
   build-winarm64-msvc:
     runs-on: windows-11-arm
@@ -101,7 +101,7 @@ jobs:
     - uses: actions/upload-artifact@main
       with:
         name: dosbox-pure-unleashed_winarm64
-        path: main/Release-vs2022ARM64/DOSBoxPure.exe
+        path: main/Release-vs2022ARM64/DOSBoxPureStandAlone.exe
 
   build-linux_x64:
     runs-on: ubuntu-latest
